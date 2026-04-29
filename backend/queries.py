@@ -1,188 +1,164 @@
-import pandas as pd
-from database import get_connection
+from database import get_cursor
 from ghana_city_coords import CITY_COORDS
 
-def get_total_facilities():
-    conn = get_connection()
-    df = pd.read_sql("SELECT COUNT(*) as total FROM facilities_cleaned", conn)
+
+def rows_to_dict(cursor):
+    cols = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def run_query(sql):
+    conn, cursor = get_cursor()
+    cursor.execute(sql)
+    data = rows_to_dict(cursor)
+    cursor.close()
     conn.close()
-    return df.to_dict(orient="records")
+    return data
+
+
+def get_total_facilities():
+    return run_query("""
+        SELECT COUNT(*) AS total
+        FROM facilities_cleaned
+    """)
+
 
 def get_all_facilities(limit=20):
-    conn = get_connection()
-    df = pd.read_sql(f"SELECT * FROM facilities_cleaned LIMIT {limit}", conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    return run_query(f"""
+        SELECT *
+        FROM facilities_cleaned
+        LIMIT {int(limit)}
+    """)
+
 
 def search_country(country):
-    conn = get_connection()
-    query = f"""
-        SELECT * FROM facilities_cleaned
-        WHERE address_country LIKE '%{country}%'
+    country = country.replace("'", "''")
+    return run_query(f"""
+        SELECT *
+        FROM facilities_cleaned
+        WHERE lower(address_country) LIKE '%{country.lower()}%'
         LIMIT 50
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    """)
+
 
 def search_specialty(skill):
-    conn = get_connection()
-    query = f"""
-        SELECT * FROM facilities_cleaned
-        WHERE specialties LIKE '%{skill}%'
+    skill = skill.replace("'", "''")
+    return run_query(f"""
+        SELECT *
+        FROM facilities_cleaned
+        WHERE lower(specialties) LIKE '%{skill.lower()}%'
         LIMIT 50
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    """)
+
 
 def facilities_by_country():
-    conn = get_connection()
+    return run_query("""
+        SELECT address_country, COUNT(*) AS total
+        FROM facilities_cleaned
+        GROUP BY address_country
+        ORDER BY total DESC
+    """)
 
-    sql = """
-    SELECT address_country, COUNT(*) as total
-    FROM facilities_cleaned
-    GROUP BY address_country
-    ORDER BY total DESC
-    """
-
-    df = pd.read_sql(sql, conn)
-    conn.close()
-    return df.to_dict(orient="records")
 
 def facilities_by_city():
-    conn = get_connection()
-    sql = """
-    SELECT address_city, COUNT(*) AS total
-    FROM facilities_cleaned
-    GROUP BY address_city
-    ORDER BY total DESC
-    """
-    df = pd.read_sql(sql, conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    return run_query("""
+        SELECT address_city, COUNT(*) AS total
+        FROM facilities_cleaned
+        GROUP BY address_city
+        ORDER BY total DESC
+    """)
+
 
 def search_type(facility_type):
-    conn = get_connection()
-    sql = f"""
-    SELECT *
-    FROM facilities_cleaned
-    WHERE facilityTypeId LIKE '%{facility_type}%'
-    LIMIT 50
-    """
-    df = pd.read_sql(sql, conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    facility_type = facility_type.replace("'", "''")
+    return run_query(f"""
+        SELECT *
+        FROM facilities_cleaned
+        WHERE lower(facilityTypeId) LIKE '%{facility_type.lower()}%'
+        LIMIT 50
+    """)
+
 
 def top_specialties():
-    conn = get_connection()
-
-    sql = """
-    SELECT specialties, COUNT(*) as total
-    FROM facilities_cleaned
-    WHERE specialties IS NOT NULL
-    GROUP BY specialties
-    ORDER BY total DESC
-    LIMIT 10
-    """
-
-    df = pd.read_sql(sql, conn)
-    conn.close()
-    return df.to_dict(orient="records")
+    return run_query("""
+        SELECT specialties, COUNT(*) AS total
+        FROM facilities_cleaned
+        WHERE specialties IS NOT NULL
+          AND trim(specialties) != ''
+        GROUP BY specialties
+        ORDER BY total DESC
+        LIMIT 10
+    """)
 
 
 def top_equipped():
-    conn = get_connection()
+    return run_query("""
+        SELECT
+            name,
+            address_city,
+            address_country,
+            equipment,
+            specialties
+        FROM facilities_cleaned
+        WHERE equipment IS NOT NULL
+          AND trim(equipment) != ''
+          AND lower(equipment) != 'unknown'
+        ORDER BY length(equipment) DESC
+        LIMIT 20
+    """)
 
-    sql = """
-    SELECT 
-        name,
-        address_city,
-        address_country,
-        equipment,
-        specialties
-    FROM facilities_cleaned
-    WHERE equipment IS NOT NULL
-      AND TRIM(equipment) != ''
-      AND LOWER(equipment) != 'unknown'
-    ORDER BY LENGTH(equipment) DESC
-    LIMIT 20
-    """
-
-    df = pd.read_sql(sql, conn)
-    conn.close()
-
-    return df.to_dict(orient="records")
 
 def low_capacity_alert():
-    conn = get_connection()
-
-    sql = """
-    SELECT
-        name,
-        address_city,
-        address_country,
-        capacity,
-        numberDoctors,
-        specialties
-    FROM facilities_cleaned
-    WHERE
-        (
-            CAST(capacity AS INTEGER) <= 10
+    return run_query("""
+        SELECT
+            name,
+            address_city,
+            address_country,
+            capacity,
+            numberDoctors,
+            specialties
+        FROM facilities_cleaned
+        WHERE
+            CAST(capacity AS INT) <= 10
             OR capacity IS NULL
-            OR TRIM(capacity) = ''
-            OR LOWER(capacity) = 'unknown'
-        )
-    ORDER BY
-        CASE
-            WHEN capacity IS NULL OR TRIM(capacity) = '' OR LOWER(capacity) = 'unknown'
-            THEN 0
-            ELSE CAST(capacity AS INTEGER)
-        END ASC
-    LIMIT 20
-    """
+            OR trim(capacity) = ''
+            OR lower(capacity) = 'unknown'
+        LIMIT 20
+    """)
 
-    df = pd.read_sql(sql, conn)
-    conn.close()
-
-    return df.to_dict(orient="records")
 
 def map_data():
-    conn = get_connection()
+    data = run_query("""
+        SELECT
+            name,
+            address_city,
+            address_country,
+            facilityTypeId,
+            specialties
+        FROM facilities_cleaned
+        WHERE address_city IS NOT NULL
+          AND trim(address_city) != ''
+    """)
 
-    sql = """
-    SELECT
-        name,
-        address_city,
-        address_country,
-        facilityTypeId,
-        specialties
-    FROM facilities_cleaned
-    WHERE address_city IS NOT NULL
-    """
+    # Add coordinates in Python
+    cleaned = []
 
-    df = pd.read_sql(sql, conn)
-    conn.close()
-
-    # Clean city names
-    df["address_city"] = df["address_city"].replace({
+    rename_map = {
         "Accra Metro": "Accra",
         "Greater Accra": "Accra",
         "Kumasi Central": "Kumasi"
-    })
-    df["address_city"] = df["address_city"].astype(str).str.strip()
+    }
 
-    # Map coordinates
-    df["lat"] = df["address_city"].apply(
-        lambda city: CITY_COORDS.get(city, [None, None])[0]
-    )
+    for row in data:
+        city = str(row["address_city"]).strip()
+        city = rename_map.get(city, city)
 
-    df["lng"] = df["address_city"].apply(
-        lambda city: CITY_COORDS.get(city, [None, None])[1]
-    )
+        coords = CITY_COORDS.get(city)
 
-    # Keep only rows with coordinates
-    df = df[df["lat"].notnull() & df["lng"].notnull()]
+        if coords:
+            row["lat"] = coords[0]
+            row["lng"] = coords[1]
+            cleaned.append(row)
 
-    return df.to_dict(orient="records")
-
+    return cleaned

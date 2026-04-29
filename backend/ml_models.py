@@ -1,24 +1,36 @@
 import pandas as pd
-import sqlite3
-import joblib
 from sklearn.ensemble import IsolationForest
+from database import get_cursor
+from model_store import save_model, load_model
 
-DB_PATH = "../database/healthcare.db"
+def fetch_df():
+    conn, cursor = get_cursor()
+    cursor.execute("""
+        SELECT *
+        FROM facilities_cleaned
+    """)
+    rows = cursor.fetchall()
+    cols = [d[0] for d in cursor.description]
+    cursor.close()
+    conn.close()
+    return pd.DataFrame(rows, columns=cols)
 
-
-def train_anomaly_model():
-    conn = sqlite3.connect(DB_PATH)
-
-    df = pd.read_sql("SELECT * FROM facilities_cleaned", conn)
-
-    # Create numeric features
+def prepare(df):
     df["capacity_num"] = pd.to_numeric(df["capacity"], errors="coerce").fillna(0)
     df["doctors_num"] = pd.to_numeric(df["numberDoctors"], errors="coerce").fillna(0)
+    df["equipment_len"] = df["equipment"].fillna("").astype(str).str.len()
+    df["specialties_len"] = df["specialties"].fillna("").astype(str).str.len()
+    return df
 
-    df["equipment_len"] = df["equipment"].fillna("").astype(str).apply(len)
-    df["specialties_len"] = df["specialties"].fillna("").astype(str).apply(len)
+def train_anomaly_model():
+    df = prepare(fetch_df())
 
-    X = df[["capacity_num", "doctors_num", "equipment_len", "specialties_len"]]
+    X = df[[
+        "capacity_num",
+        "doctors_num",
+        "equipment_len",
+        "specialties_len"
+    ]]
 
     model = IsolationForest(
         n_estimators=100,
@@ -27,33 +39,26 @@ def train_anomaly_model():
     )
 
     model.fit(X)
+    save_model(model, "anomaly_model.pkl")
 
-    joblib.dump(model, "anomaly_model.pkl")
-    conn.close()
-
-    return "Model trained successfully"
-
+    return "Anomaly model trained and saved"
 
 def predict_anomalies():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT * FROM facilities_cleaned", conn)
+    df = prepare(fetch_df())
 
-    df["capacity_num"] = pd.to_numeric(df["capacity"], errors="coerce").fillna(0)
-    df["doctors_num"] = pd.to_numeric(df["numberDoctors"], errors="coerce").fillna(0)
-    df["equipment_len"] = df["equipment"].fillna("").astype(str).apply(len)
-    df["specialties_len"] = df["specialties"].fillna("").astype(str).apply(len)
+    X = df[[
+        "capacity_num",
+        "doctors_num",
+        "equipment_len",
+        "specialties_len"
+    ]]
 
-    X = df[["capacity_num", "doctors_num", "equipment_len", "specialties_len"]]
+    model = load_model("anomaly_model.pkl")
+    df["flag"] = model.predict(X)
 
-    model = joblib.load("anomaly_model.pkl")
-    preds = model.predict(X)
+    out = df[df["flag"] == -1]
 
-    df["anomaly_flag"] = preds
-    suspicious = df[df["anomaly_flag"] == -1]
-
-    conn.close()
-
-    return suspicious[[
+    return out[[
         "name",
         "address_city",
         "capacity",
